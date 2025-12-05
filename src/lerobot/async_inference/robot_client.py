@@ -51,6 +51,8 @@ import logging
 import pickle  # nosec
 import threading
 import time
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from collections.abc import Callable
 from dataclasses import asdict
 from pprint import pformat
@@ -92,6 +94,36 @@ from .helpers import (
     map_robot_keys_to_lerobot_features,
     visualize_action_queue_size,
 )
+
+
+class TaskRequestHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == '/update_task':
+            try:
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data.decode('utf-8'))
+                new_task = data.get('task')
+                
+                if new_task:
+                    self.server.client_instance.task = new_task
+                    self.server.client_instance.logger.info(f"Task updated via API to: {new_task}")
+                    
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "success", "task": new_task}).encode())
+                else:
+                    self.send_error(400, "Missing task field")
+            except Exception as e:
+                self.server.client_instance.logger.error(f"Error updating task: {e}")
+                self.send_error(500, str(e))
+        else:
+            self.send_error(404)
+
+    def log_message(self, format, *args):
+        # Suppress default logging
+        pass
 
 
 class RobotClient:
@@ -153,6 +185,20 @@ class RobotClient:
         # Use an event for thread-safe coordination
         self.must_go = threading.Event()
         self.must_go.set()  # Initially set - observations qualify for direct processing
+
+        # Task management
+        self.task = config.task
+        self._start_task_server()
+
+    def _start_task_server(self, port=8001):
+        try:
+            self.task_server = HTTPServer(('0.0.0.0', port), TaskRequestHandler)
+            self.task_server.client_instance = self
+            thread = threading.Thread(target=self.task_server.serve_forever, daemon=True)
+            thread.start()
+            self.logger.info(f"Task update server started on port {port}")
+        except Exception as e:
+            self.logger.error(f"Failed to start task server: {e}")
 
     @property
     def running(self):
@@ -424,13 +470,13 @@ class RobotClient:
         with self.action_queue_lock:
             return self.action_queue.qsize() / self.action_chunk_size <= self._chunk_size_threshold
 
-    def control_loop_observation(self, task: str, verbose: bool = False) -> RawObservation:
+    def control_loop_observation(self, verbose: bool = False) -> RawObservation:
         try:
             # Get serialized observation bytes from the function
             start_time = time.perf_counter()
 
             raw_observation: RawObservation = self.robot.get_observation()
-            raw_observation["task"] = task
+            raw_observation["task"] = self.task
 
             with self.latest_action_lock:
                 latest_action = self.latest_action
@@ -476,11 +522,11 @@ class RobotClient:
         except Exception as e:
             self.logger.error(f"Error in observation sender: {e}")
 
-    def control_loop(self, task: str, verbose: bool = False) -> tuple[Observation, Action]:
+    def control_loop(self, verbose: bool = False) -> tuple[Observation, Action]:
         """Combined function for executing actions and streaming observations"""
         # Wait at barrier for synchronized start
         self.start_barrier.wait()
-        self.logger.info("Control loop thread starting")
+        self.logger.info(f"Control loop thread starting with task: {self.task}")
 
         _performed_action = None
         _captured_observation = None
@@ -493,8 +539,7 @@ class RobotClient:
 
             """Control loop: (2) Streaming observations to the remote policy server"""
             if self._ready_to_send_observation():
-                _captured_observation = self.control_loop_observation(
-                    task, verbose)
+                _captured_observation = self.control_loop_observation(verbose)
 
             self.logger.debug(
                 f"Control loop (ms): {(time.perf_counter() - control_loop_start) * 1000:.2f}")
@@ -526,7 +571,7 @@ def async_client(cfg: RobotClientConfig):
 
         try:
             # The main thread runs the control loop
-            client.control_loop(task=cfg.task)
+            client.control_loop()
 
         finally:
             client.stop()
