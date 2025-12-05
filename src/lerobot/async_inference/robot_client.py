@@ -190,7 +190,7 @@ class RobotClient:
         self.task = config.task
         self._start_task_server()
 
-    def _start_task_server(self, port=8001):
+    def _start_task_server(self, port=8002):
         try:
             self.task_server = HTTPServer(('0.0.0.0', port), TaskRequestHandler)
             self.task_server.client_instance = self
