@@ -166,6 +166,12 @@ class RobotClientConfig:
     debug_visualize_queue_size: bool = field(
         default=False, metadata={"help": "Visualize the action queue size"}
     )
+    
+    # Web Editor integration
+    web_editor_url: str | None = field(
+        default=None,
+        metadata={"help": "URL of the Web Editor backend to poll for tasks (e.g. https://my-app.com)"}
+    )
 
     @property
     def environment_dt(self) -> float:
@@ -217,4 +223,5 @@ class RobotClientConfig:
             "task": self.task,
             "debug_visualize_queue_size": self.debug_visualize_queue_size,
             "aggregate_fn_name": self.aggregate_fn_name,
+            "web_editor_url": self.web_editor_url,
         }

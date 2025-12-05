@@ -95,6 +95,7 @@ from .helpers import (
     visualize_action_queue_size,
 )
 
+import requests
 
 class TaskRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -189,6 +190,36 @@ class RobotClient:
         # Task management
         self.task = config.task
         self._start_task_server()
+        
+        # Start polling if web editor URL is provided
+        if config.web_editor_url:
+            self._start_polling_thread()
+
+    def _start_polling_thread(self):
+        """Start a thread to poll the web editor for new tasks"""
+        def poll_web_editor():
+            self.logger.info(f"Starting to poll Web Editor at {self.config.web_editor_url}")
+            last_task = self.task
+            while self.running:
+                try:
+                    response = requests.get(
+                        f"{self.config.web_editor_url.rstrip('/')}/api/goals/pending-task",
+                        timeout=5
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        new_task = data.get("task")
+                        if new_task and new_task != last_task:
+                            self.task = new_task
+                            last_task = new_task
+                            self.logger.info(f"Task updated via polling: {new_task}")
+                except Exception as e:
+                    # Log only occasionally to avoid spam
+                    pass
+                time.sleep(1.0)
+                
+        thread = threading.Thread(target=poll_web_editor, daemon=True)
+        thread.start()
 
     def _start_task_server(self, port=8002):
         try:
